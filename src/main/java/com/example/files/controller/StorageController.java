@@ -24,13 +24,34 @@ public class StorageController {
     private static final Path BASE_DIR = Paths.get("/data/uploads");
     private static final long MAX_FILE_SIZE = 50L * 1024 * 1024; // 50MB
 
-    private static final Set<String> VIEWABLE_EXTENSIONS = Set.of(
-            "txt","md","log",
-            "jpg","jpeg","png","gif","webp","svg",
-            "pdf","html","htm",
-            "json","xml",
-            "mp3","mp4","webm","ogg"
-    );
+    /* ===================== CREATE FOLDER ===================== */
+
+    @PostMapping("/folder")
+    public ResponseEntity<?> createFolder(@RequestParam("folder") String folder) throws IOException {
+        String cleanFolder = StringUtils.cleanPath(folder).replace("\\", "/");
+        if (cleanFolder.isEmpty() || cleanFolder.equals(".")) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Invalid path",
+                    "message", "Folder path cannot be empty"
+            ));
+        }
+        Path targetDir = BASE_DIR.resolve(cleanFolder).normalize();
+        if (!targetDir.startsWith(BASE_DIR)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error", "Invalid path",
+                    "message", "Invalid folder path"
+            ));
+        }
+        boolean created = Files.notExists(targetDir);
+        Files.createDirectories(targetDir);
+        return ResponseEntity
+                .status(created ? HttpStatus.CREATED : HttpStatus.OK)
+                .body(Map.of(
+                        "folder", cleanFolder,
+                        "message", created ? "Folder created" : "Folder already exists",
+                        "path", "/api/storage/view/" + cleanFolder
+                ));
+    }
 
     /* ===================== UPLOAD ===================== */
 
@@ -49,7 +70,8 @@ public class StorageController {
         }
 
         String fileName = StringUtils.cleanPath(Objects.requireNonNull(file.getOriginalFilename()));
-        Path targetDir = BASE_DIR.resolve(folder).normalize();
+        String cleanFolder = StringUtils.cleanPath(folder).replace("\\", "/");
+        Path targetDir = BASE_DIR.resolve(cleanFolder).normalize();
         Path targetFile = targetDir.resolve(fileName);
 
         if (!targetDir.startsWith(BASE_DIR)) {
@@ -72,9 +94,9 @@ public class StorageController {
 
         return ResponseEntity.ok(Map.of(
                 "fileName", fileName,
-                "folder", folder,
-                "viewUrl", "/api/storage/view/" + folder + "/" + fileName,
-                "downloadUrl", "/api/storage/download/" + folder + "/" + fileName
+                "folder", cleanFolder,
+                "viewUrl", "/api/storage/view/" + cleanFolder + "/" + fileName,
+                "downloadUrl", "/api/storage/download/" + cleanFolder + "/" + fileName
         ));
     }
 
@@ -92,17 +114,6 @@ public class StorageController {
                         "error", "Path is a directory",
                         "message", "The requested path is a directory, not a file",
                         "path", filePath.toString()
-                ));
-            }
-
-            String ext = getExtension(filePath.getFileName().toString());
-
-            if (!VIEWABLE_EXTENSIONS.contains(ext)) {
-                return ResponseEntity.badRequest().body(Map.of(
-                        "error", "File not viewable",
-                        "fileName", filePath.getFileName().toString(),
-                        "extension", ext,
-                        "message", "This file type cannot be viewed directly. Please download it."
                 ));
             }
 
@@ -143,6 +154,35 @@ public class StorageController {
                     .header(HttpHeaders.CONTENT_DISPOSITION,
                             "attachment; filename=\"" + filePath.getFileName() + "\"")
                     .body(resource);
+        } catch (SecurityException e) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                    "error", "Access denied",
+                    "message", "Invalid or unauthorized path"
+            ));
+        }
+    }
+
+    /* ===================== DELETE FILE ===================== */
+
+    @DeleteMapping("/delete/**")
+    public ResponseEntity<?> deleteFile(HttpServletRequest request) throws IOException {
+        try {
+            Path filePath = resolvePath(request, "/api/storage/delete/");
+            if (!Files.exists(filePath)) {
+                return notFound(filePath);
+            }
+            if (Files.isDirectory(filePath)) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                        "error", "Cannot delete directory",
+                        "message", "Use a file path. Deleting folders is not supported.",
+                        "path", filePath.toString()
+                ));
+            }
+            Files.delete(filePath);
+            return ResponseEntity.ok(Map.of(
+                    "message", "File deleted",
+                    "path", filePath.getFileName().toString()
+            ));
         } catch (SecurityException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
                     "error", "Access denied",
@@ -208,11 +248,6 @@ public class StorageController {
                 "message", "File does not exist at: " + filePath,
                 "resolvedPath", filePath.toString()
         ));
-    }
-
-    private String getExtension(String fileName) {
-        int i = fileName.lastIndexOf('.');
-        return i == -1 ? "" : fileName.substring(i + 1).toLowerCase();
     }
 }
 
