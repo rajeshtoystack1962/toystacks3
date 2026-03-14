@@ -49,13 +49,13 @@ public class StorageController {
                 .body(Map.of(
                         "folder", cleanFolder,
                         "message", created ? "Folder created" : "Folder already exists",
-                        "path", "/api/storage/view/" + cleanFolder
+                        "path", "/api/storage/" + cleanFolder
                 ));
     }
 
-    /* ===================== UPLOAD ===================== */
+    /* ===================== UPLOAD (POST) / VIEW or DOWNLOAD (GET) – single route ===================== */
 
-    @PostMapping("/upload")
+    @PostMapping("")
     public ResponseEntity<?> upload(
             @RequestParam("folder") String folder,
             @RequestParam("file") MultipartFile file) throws IOException {
@@ -92,20 +92,25 @@ public class StorageController {
 
         Files.copy(file.getInputStream(), targetFile);
 
+        String filePath = cleanFolder + "/" + fileName;
         return ResponseEntity.ok(Map.of(
                 "fileName", fileName,
                 "folder", cleanFolder,
-                "viewUrl", "/api/storage/view/" + cleanFolder + "/" + fileName,
-                "downloadUrl", "/api/storage/download/" + cleanFolder + "/" + fileName
+                "url", "/api/storage/" + filePath,
+                "viewUrl", "/api/storage/" + filePath,
+                "downloadUrl", "/api/storage/" + filePath + "?download=true"
         ));
     }
 
-    /* ===================== VIEW ===================== */
-
-    @GetMapping("/view/**")
-    public ResponseEntity<?> view(HttpServletRequest request) throws IOException {
+    /**
+     * Single GET route: view (inline) or download (attachment).
+     * View: GET /api/storage/<folder>/<fileName>
+     * Download: GET /api/storage/<folder>/<fileName>?download=true
+     */
+    @GetMapping("/**")
+    public ResponseEntity<?> getFile(HttpServletRequest request) throws IOException {
         try {
-            Path filePath = resolvePath(request, "/api/storage/view/");
+            Path filePath = resolvePath(request, "/api/storage/");
             if (!Files.exists(filePath)) {
                 return notFound(filePath);
             }
@@ -122,37 +127,15 @@ public class StorageController {
                 mimeType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
             }
 
+            boolean download = "true".equalsIgnoreCase(request.getParameter("download"));
+            String disposition = download ? "attachment" : "inline";
+
             Resource resource = new InputStreamResource(Files.newInputStream(filePath));
 
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(mimeType))
                     .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "inline; filename=\"" + filePath.getFileName() + "\"")
-                    .body(resource);
-        } catch (SecurityException e) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
-                    "error", "Access denied",
-                    "message", "Invalid or unauthorized path"
-            ));
-        }
-    }
-
-    /* ===================== DOWNLOAD ===================== */
-
-    @GetMapping("/download/**")
-    public ResponseEntity<?> download(HttpServletRequest request) throws IOException {
-        try {
-            Path filePath = resolvePath(request, "/api/storage/download/");
-            if (!Files.exists(filePath) || Files.isDirectory(filePath)) {
-                throw new FileNotFoundException();
-            }
-
-            Resource resource = new InputStreamResource(Files.newInputStream(filePath));
-
-            return ResponseEntity.ok()
-                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    .header(HttpHeaders.CONTENT_DISPOSITION,
-                            "attachment; filename=\"" + filePath.getFileName() + "\"")
+                            disposition + "; filename=\"" + filePath.getFileName() + "\"")
                     .body(resource);
         } catch (SecurityException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
