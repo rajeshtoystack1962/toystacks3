@@ -145,12 +145,12 @@ public class StorageController {
         }
     }
 
-    /* ===================== DELETE FILE ===================== */
+    /* ===================== DELETE FILE (same route: DELETE /api/storage/<path>) ===================== */
 
-    @DeleteMapping("/delete/**")
+    @DeleteMapping("/**")
     public ResponseEntity<?> deleteFile(HttpServletRequest request) throws IOException {
         try {
-            Path filePath = resolvePath(request, "/api/storage/delete/");
+            Path filePath = resolvePath(request, "/api/storage/");
             if (!Files.exists(filePath)) {
                 return notFound(filePath);
             }
