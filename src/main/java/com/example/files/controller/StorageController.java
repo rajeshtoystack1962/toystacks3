@@ -45,7 +45,7 @@ public class StorageController {
         boolean created = Files.notExists(targetDir);
         Files.createDirectories(targetDir);
         return ResponseEntity
-                .status(created ? HttpStatus.CREATED : HttpStatus.OK)
+                .status(created ? HttpStatus.CREATED : HttpStatus.CONFLICT)
                 .body(Map.of(
                         "folder", cleanFolder,
                         "message", created ? "Folder created" : "Folder already exists",
