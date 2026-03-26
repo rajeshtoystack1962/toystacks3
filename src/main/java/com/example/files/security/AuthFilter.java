@@ -29,6 +29,7 @@ public class AuthFilter extends OncePerRequestFilter {
         if (!contextPath.isEmpty() && path.startsWith(contextPath)) {
             path = path.substring(contextPath.length());
         }
+        path = normalizePath(path);
 
         if (isPublicPath(path)) {
             filterChain.doFilter(request, response);
@@ -61,9 +62,19 @@ public class AuthFilter extends OncePerRequestFilter {
 
     private boolean isPublicPath(String path) {
         return path.equals("/login")
+                || path.equals("/login/")
                 || path.equals("/logout")
                 || path.equals("/error")
                 || path.startsWith("/favicon");
+    }
+
+    private String normalizePath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            return "/";
+        }
+        int matrixIdx = rawPath.indexOf(';');
+        String normalized = matrixIdx >= 0 ? rawPath.substring(0, matrixIdx) : rawPath;
+        return normalized.isBlank() ? "/" : normalized;
     }
 
     private boolean isSessionAuthenticated(HttpSession session) {
