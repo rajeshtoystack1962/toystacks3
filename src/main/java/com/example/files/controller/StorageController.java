@@ -1,7 +1,7 @@
 package com.example.files.controller;
 
+import com.example.files.service.StorageService;
 import jakarta.servlet.http.HttpServletRequest;
-
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.*;
@@ -11,46 +11,46 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.*;
 import java.net.URLConnection;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 
 
 @RestController
 @RequestMapping("/api/storage")
 public class StorageController {
+    private final StorageService storageService;
 
-    private static final Path BASE_DIR = Paths.get("/data/uploads");
-    private static final long MAX_FILE_SIZE = 50L * 1024 * 1024; // 50MB
+    public StorageController(StorageService storageService) {
+        this.storageService = storageService;
+    }
 
     /* ===================== CREATE FOLDER ===================== */
 
     @PostMapping("/folder")
     public ResponseEntity<?> createFolder(@RequestParam("folder") String folder) throws IOException {
-        String cleanFolder = StringUtils.cleanPath(folder).replace("\\", "/");
+        String cleanFolder = storageService.cleanFolder(folder);
         if (cleanFolder.isEmpty() || cleanFolder.equals(".")) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", "Invalid path",
                     "message", "Folder path cannot be empty"
             ));
         }
-        Path targetDir = BASE_DIR.resolve(cleanFolder).normalize();
-        if (!targetDir.startsWith(BASE_DIR)) {
+        try {
+            boolean created = storageService.createFolder(cleanFolder);
+            return ResponseEntity
+                    .status(created ? HttpStatus.CREATED : HttpStatus.CONFLICT)
+                    .body(Map.of(
+                            "folder", cleanFolder,
+                            "message", created ? "Folder created" : "Folder already exists",
+                            "path", "/api/storage/" + cleanFolder
+                    ));
+        } catch (SecurityException e) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", "Invalid path",
                     "message", "Invalid folder path"
             ));
         }
-        boolean created = Files.notExists(targetDir);
-        Files.createDirectories(targetDir);
-        return ResponseEntity
-                .status(created ? HttpStatus.CREATED : HttpStatus.CONFLICT)
-                .body(Map.of(
-                        "folder", cleanFolder,
-                        "message", created ? "Folder created" : "Folder already exists",
-                        "path", "/api/storage/" + cleanFolder
-                ));
     }
 
     /* ===================== UPLOAD (POST) / VIEW or DOWNLOAD (GET) – single route ===================== */
@@ -60,7 +60,7 @@ public class StorageController {
             @RequestParam("folder") String folder,
             @RequestParam("file") MultipartFile file) throws IOException {
 
-        if (file.getSize() > MAX_FILE_SIZE) {
+        if (file.getSize() > storageService.getMaxFileSize()) {
             return ResponseEntity
                     .status(HttpStatus.PAYLOAD_TOO_LARGE)
                     .body(Map.of(
@@ -69,37 +69,28 @@ public class StorageController {
                     ));
         }
 
-        String fileName = StringUtils.cleanPath(Objects.requireNonNull(file.getOriginalFilename()));
-        String cleanFolder = StringUtils.cleanPath(folder).replace("\\", "/");
-        Path targetDir = BASE_DIR.resolve(cleanFolder).normalize();
-        Path targetFile = targetDir.resolve(fileName);
-
-        if (!targetDir.startsWith(BASE_DIR)) {
+        String cleanFolder = storageService.cleanFolder(folder);
+        try {
+            String fileName = storageService.storeFile(cleanFolder, file);
+            String filePath = cleanFolder.isEmpty() ? fileName : cleanFolder + "/" + fileName;
+            return ResponseEntity.ok(Map.of(
+                    "fileName", fileName,
+                    "folder", cleanFolder,
+                    "url", "/api/storage/" + filePath,
+                    "viewUrl", "/api/storage/" + filePath,
+                    "downloadUrl", "/api/storage/" + filePath + "?download=true"
+            ));
+        } catch (SecurityException e) {
             return ResponseEntity.badRequest().body(Map.of(
                     "error", "Invalid path",
                     "message", "Invalid folder path"
             ));
-        }
-
-        Files.createDirectories(targetDir);
-
-        if (Files.exists(targetFile)) {
+        } catch (IllegalStateException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
                     "error", "File already exists",
-                    "message", "A file named '" + fileName + "' already exists in this folder."
+                    "message", e.getMessage()
             ));
         }
-
-        Files.copy(file.getInputStream(), targetFile);
-
-        String filePath = cleanFolder + "/" + fileName;
-        return ResponseEntity.ok(Map.of(
-                "fileName", fileName,
-                "folder", cleanFolder,
-                "url", "/api/storage/" + filePath,
-                "viewUrl", "/api/storage/" + filePath,
-                "downloadUrl", "/api/storage/" + filePath + "?download=true"
-        ));
     }
 
     /**
@@ -110,7 +101,7 @@ public class StorageController {
     @GetMapping("/**")
     public ResponseEntity<?> getFile(HttpServletRequest request) throws IOException {
         try {
-            Path filePath = resolvePath(request, "/api/storage/");
+            Path filePath = storageService.resolveRequestPath(request.getRequestURI(), "/api/storage/");
             if (!Files.exists(filePath)) {
                 return notFound(filePath);
             }
@@ -130,7 +121,7 @@ public class StorageController {
             boolean download = "true".equalsIgnoreCase(request.getParameter("download"));
             String disposition = download ? "attachment" : "inline";
 
-            Resource resource = new InputStreamResource(Files.newInputStream(filePath));
+            Resource resource = storageService.loadFile(filePath);
 
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType(mimeType))
@@ -150,70 +141,22 @@ public class StorageController {
     @DeleteMapping("/**")
     public ResponseEntity<?> deleteFile(HttpServletRequest request) throws IOException {
         try {
-            Path filePath = resolvePath(request, "/api/storage/");
-            if (!Files.exists(filePath)) {
+            Path filePath = storageService.resolveRequestPath(request.getRequestURI(), "/api/storage/");
+            if (Files.notExists(filePath)) {
                 return notFound(filePath);
             }
-            if (Files.isDirectory(filePath)) {
-                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                        "error", "Cannot delete directory",
-                        "message", "Use a file path. Deleting folders is not supported.",
-                        "path", filePath.toString()
-                ));
-            }
-            Files.delete(filePath);
+            boolean isDirectory = Files.isDirectory(filePath);
+            storageService.deleteAny(filePath);
             return ResponseEntity.ok(Map.of(
-                    "message", "File deleted",
-                    "path", filePath.getFileName().toString()
+                    "message", isDirectory ? "Folder deleted" : "File deleted",
+                    "path", filePath.getFileName().toString(),
+                    "type", isDirectory ? "folder" : "file"
             ));
         } catch (SecurityException e) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
                     "error", "Access denied",
                     "message", "Invalid or unauthorized path"
             ));
-        }
-    }
-
-    /* ===================== HELPERS ===================== */
-
-    private Path resolvePath(HttpServletRequest request, String prefix) {
-        try {
-            String requestURI = request.getRequestURI();
-            
-            // Find the prefix in the URI (handles context path like /file-api-1.0.0)
-            int prefixIndex = requestURI.indexOf(prefix);
-            if (prefixIndex == -1) {
-                throw new SecurityException("Prefix not found in URI: " + requestURI);
-            }
-            
-            // Extract the path after the prefix
-            String path = requestURI.substring(prefixIndex + prefix.length());
-            
-            // Remove query parameters if any
-            int queryIndex = path.indexOf('?');
-            if (queryIndex != -1) {
-                path = path.substring(0, queryIndex);
-            }
-            
-            // Remove leading slash if present (Path.resolve treats leading / as absolute)
-            if (path.startsWith("/")) {
-                path = path.substring(1);
-            }
-            
-            // URL decode the path to handle %20, %28, etc.
-            path = URLDecoder.decode(path, StandardCharsets.UTF_8);
-            
-            // Resolve and normalize the path
-            Path resolved = BASE_DIR.resolve(path).normalize();
-            
-            // Security check: ensure path stays within base directory
-            if (!resolved.startsWith(BASE_DIR)) {
-                throw new SecurityException("Path traversal detected: " + resolved);
-            }
-            
-            return resolved;
-        } catch (IllegalArgumentException e) {
-            throw new SecurityException("Invalid path encoding: " + e.getMessage(), e);
         }
     }
 

@@ -20,7 +20,7 @@ VOLUME ["/data/uploads"]
 
 RUN rm -rf /usr/local/tomcat/webapps/*
 
-COPY --from=build /app/target/file-api-1.0.0.war /usr/local/tomcat/webapps/
+COPY --from=build /app/target/storage.war /usr/local/tomcat/webapps/
 
 # Expose Tomcat port
 EXPOSE 8080
